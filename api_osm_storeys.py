@@ -2,12 +2,12 @@
 Run-only. Queries national storey statistics from OpenStreetMap (OSM) building:levels data.
 Run: python api_osm_storeys.py → data/api_osm_storeys.xlsx. 
 
-No. of above-ground storeys used in roof-area calculation is pulled from OSM via public Overpass API, 
-filtered by activity class and sampled across 9 representative cities. 
+No. of above-ground storeys used in roof-area calculation is pulled from OSM via public Overpass API,
+filtered to hospitals and sampled across 9 representative cities.
 All samples pooled nationally and summarised per activity class.
 
-A parallel survey pulls `roof:shape` and `roof:angle` for the same activity classes and cities, 
-to test the flat-roof assumption used in the PV roof-area model. 
+A parallel survey pulls `roof:shape` and `roof:angle` for the same buildings and cities,
+to test the flat-roof assumption used in the PV roof-area model.
 
 Outputs: data/api_osm_storeys.xlsx with five sheets —
   - "Summary": national median / mean / min / max / n storeys per activity class.
@@ -20,7 +20,6 @@ Outputs: data/api_osm_storeys.xlsx with five sheets —
 
 Note:
   - OSM coverage is reliant on user contributions, and may not be a fully accurate representation of the true stock.
-  - Department stores are sparse in OSM; `building=retail` is a broader category that captures all retail.
   - Scotland W uses Glasgow city (instead of Prestwick) for an adequate building sample.
   - `roof:shape` is better populated than `roof:angle`; expect thin angle samples.
 
@@ -70,10 +69,7 @@ STATIONS = {
 
 # Activity classes named to match demand_profile_model.py. 
 ACTIVITY_FILTERS = {
-    "Office: A/C standard":     ['"building"="office"', '"office"'],
-    "Retail: Department store": ['"shop"="department_store"', '"building"="retail"'],
-    "Health: Health centre":    ['"amenity"="clinic"', '"healthcare"="centre"', '"amenity"="doctors"'],
-    "Health: Hospital":         ['"amenity"="hospital"', '"building"="hospital"'],
+    "Health: Hospital": ['"amenity"="hospital"', '"building"="hospital"'],
 }
 
 # Activity order for the summary sheet.
@@ -269,7 +265,7 @@ def summarise(raw_df):
         "Min Storeys":     g.min().astype("Int64"),
         "Max Storeys":     g.max().astype("Int64"),
     })
-    # Keep the four activities in a fixed order; show classes with no data as blank rows.
+    # Keep activities in a fixed order; show any with no data as a blank row.
     summary = summary.reindex(ACTIVITY_ORDER)
     return summary.reset_index().rename(columns={"index": "Activity Class"})
 

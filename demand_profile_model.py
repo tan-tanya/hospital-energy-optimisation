@@ -1,6 +1,6 @@
 """
 Imported by optimisation model, but can be run as a script to generate profiles.
-Model generates building energy demand profiles per UK Met Office district and activity class.
+Model generates hospital energy demand profiles per UK Met Office district.
 
 Inputs 
 1. data/inputs.xlsx; benchmarks and parameters from CIBSE, NCM, TM46, BEES, UKPN, Met Office
@@ -10,7 +10,7 @@ Inputs
 
 Outputs (only generated when script is run directly):
 1. outputs/Demand ({timestamp})/demand/*.png; seasonal / monthly / WD-WE heatmap demand
-   plots, for every district x activity class
+   plots, for every district
 
 Data layers:
     (a) CIBSE annual energy benchmarks (typical kWh/m²/y per activity class)
@@ -30,7 +30,7 @@ Model parameters:
 
 Pipeline:
     1. initialize()   loads all source data into module-level state
-    2. main()         builds the full chart set across all districts x activity classes
+    2. main()         builds the full chart set across all districts
 """
 
 import functools
@@ -67,15 +67,6 @@ OUTPUTS_DIR = "outputs"
 # 2 - SOURCE DATA CONFIGURATION (STATIC)
 # area_weights = assumed floor-area fractions per NCM space type
 ACTIVITY_LOOKUP = {
-    "Health: Health centre": {
-        "cibse_category": "Primary Health Care",
-        "cibse_building": "Health Centres and Clinics",
-        "ncm_rows":       (148, 154),  # NCM - Occupancy Excel rows 150-155 (pandas iloc 148:154)
-        "tm46_cat":       19,          # Clinic
-        "bees_sector":    "Health",
-        "bees_sub":       "Health centres",
-        "area_weights":   [0.03, 0.20, 0.07, 0.10, 0.05, 0.55],
-    },
     "Health: Hospital": {
         "cibse_category": "Hospitals",
         "cibse_building": "General Acute Hospital",
@@ -87,32 +78,11 @@ ACTIVITY_LOOKUP = {
                            0.02, 0.02, 0.02, 0.35, 0.02, 0.08, 0.02, 0.01, 0.01,
                            0.03, 0.05, 0.02, 0.01, 0.03, 0.02, 0.03, 0.01],
     },
-    "Office: A/C standard": {
-        "cibse_category": "Offices",
-        "cibse_building": "Air conditioned, standard",
-        "ncm_rows":       (0, 11),     # NCM - Occupancy Excel rows 2-12 (pandas iloc 0:11)
-        "tm46_cat":       1,           # General office
-        "bees_sector":    "Office",
-        "bees_sub":       "Offices (public)",
-        "area_weights":   [0.03, 0.15, 0.05, 0.05, 0.03, 0.50, 0.05, 0.03, 0.03, 0.05, 0.03],
-    },
-    "Retail: Department store": {
-        "cibse_category": "Retail",
-        "cibse_building": "Department stores",
-        "ncm_rows":       (56, 66),    # NCM - Occupancy Excel rows 58-67 (pandas iloc 56:66)
-        "tm46_cat":       4,           # Large non-food shop (includes department stores)
-        "bees_sector":    "Retail",
-        "bees_sub":       "Large non-food shops",
-        "area_weights":   [0.05, 0.03, 0.03, 0.03, 0.45, 0.15, 0.10, 0.08, 0.04, 0.04],
-    },
 }
 
 # Base load (always-on electricity share) derived from BEES 2014-15 Energy Intensity survey)
 BASE_LOAD_CFG = {
-    "Health: Health centre":    (slice(141, 148), {"Hot water": 1.0, "Lighting": 0.5}),
-    "Health: Hospital":         (slice(148, 155), {"Medical equipment": 1.0, "Cooling & humidification": 1.0, "Fans": 1.0, "Hot water": 1.0}),
-    "Office: A/C standard":     (slice(246, 254), {"ICT Equipment": 1.0, "Hot water": 1.0, "Cooling & humidification": 1.0, "Fans": 1.0}),
-    "Retail: Department store": (slice(300, 307), {"Cooled storage": 1.0, "Cooling & humidification": 1.0, "Fans": 1.0, "Lighting": 0.2}),
+    "Health: Hospital": (slice(148, 155), {"Medical equipment": 1.0, "Cooling & humidification": 1.0, "Fans": 1.0, "Hot water": 1.0}),
 }
 
 # EV demand inputs: EV_PARKING_DENSITY and EV_DWELL_HOURS loaded from data/model_parameters.xlsx via model_params
@@ -659,8 +629,7 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
 
     n_districts  = len(degree_days_by_district)
-    n_activities = len(base_load_fracs)
-    print(f"\nGenerating demand plots ({n_districts} districts × {n_activities} activity classes) …")
+    print(f"\nGenerating demand plots ({n_districts} districts) …")
     generate_all_demand_plots(run_dir)
 
 # Imported at the bottom to avoid circular import.

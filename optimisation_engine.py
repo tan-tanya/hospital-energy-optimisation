@@ -70,17 +70,22 @@ from pricing import import_price_slots_central
 _PRICE_SCENARIOS = None   
 
 def price_scenarios() -> list:
-    # Reduced, weighted electricity import-price scenarios for the cost objective.
+    # Reduced, weighted (electricity, gas) import-price scenarios for the cost objective.
     global _PRICE_SCENARIOS
     if _PRICE_SCENARIOS is None:
         _PRICE_SCENARIOS = unc.generate_price_scenarios(horizon=HORIZON_YEARS)
     return _PRICE_SCENARIOS
 
 def central_scenario() -> "unc.Scenario":
-    # Single scenario reproducing the deterministic central case
-    g = TECH_COSTS["elec_price_growth"]
+    # Single scenario reproducing the deterministic central case.
+    # Gas keeps the active level multiplier + growth, i.e. exactly the band price and escalation the model applied before gas was a scenario input.
+    g  = TECH_COSTS["elec_price_growth"]
+    gl = TECH_COSTS.get("gas_import_multiplier", 1.0)
+    gg = TECH_COSTS["gas_price_growth"]
     return unc.Scenario(id="central", weight=1.0, level=1.0, growth=g,
-                        path=unc.price_multiplier_path(1.0, g, HORIZON_YEARS))
+                        path=unc.price_multiplier_path(1.0, g, HORIZON_YEARS),
+                        gas_level=gl, gas_growth=gg,
+                        gas_path=unc.price_multiplier_path(gl, gg, HORIZON_YEARS))
 
 def _scenarios_for(objective: str, scenarios: list = None) -> list:
     # Cost objective uses stochastic scenarios; emissions objective uses single central (deterministic) scenario
@@ -353,9 +358,7 @@ def discount_factor(year: int) -> float:
 def export_price(year: int) -> float:
     return TECH_COSTS["elec_export_price"] * (1.0 + TECH_COSTS["elec_price_growth"]) ** year
 
-def gas_price(year: int, base: float) -> float:
-    # base = year-0 gas import price (GBP/kWh) for the building's DESNZ gas size band 
-    return base * (1.0 + TECH_COSTS["gas_price_growth"]) ** year
+# Gas import price is per scenario: Scenario.gas_price(y, base_central), base_central = year-0 central gas band price.
 
 
 # 5 - MILP build
@@ -405,6 +408,8 @@ def _prepare_data(district: str, activity: str, heating: str, horizon_years: int
                       if not is_hp else 0.0)
     gas_band = select_gas_band(annual_gas_kwh / 1000.0)
     gas_base = gas_band["price"]
+    # As for electricity: divide out the active gas level multiplier; each scenario's gas path applies on top.
+    gas_base_central = gas_base / TECH_COSTS.get("gas_import_multiplier", 1.0)
 
     # Year-0 PV computed once per month; SOH multipliers applied per year (linear scaling)
     pv_y0_kwh_hh = {m: _pv_module_y0(district, m) * T_RES_H for m in dm.MONTHS_ORDER}   # kWh/HH/module
@@ -427,7 +432,8 @@ def _prepare_data(district: str, activity: str, heating: str, horizon_years: int
         im_slot_dependent = False
         im_slot_central = None
     ex_d       = [export_price(y) * df_y[y] for y in Y]
-    gas_d      = [gas_price(y, gas_base) * df_y[y] for y in Y]
+    gas_d      = {w: [scen.gas_price(y, gas_base_central) * df_y[y] for y in Y]
+                  for w, scen in enumerate(scenarios)}
     infl_d     = [(1.0 + TECH_COSTS["general_inflation"]) ** y * df_y[y] for y in Y]
     soh_batt_y = [soh_batt(y) for y in Y]
     ef_elec_y  = [elec_emission_factor(y) for y in Y]
@@ -468,6 +474,7 @@ def _prepare_data(district: str, activity: str, heating: str, horizon_years: int
         "im_base":     im_base,
         "elec_band":   elec_band["name"],
         "gas_base":    gas_base,
+        "gas_base_central": gas_base_central,
         "gas_band":    gas_band["name"],
     }
 
@@ -674,7 +681,7 @@ def _build_objective(prob, V: dict, data: dict,
             for y in data["Y"] for (m, d) in data["S"] for t in data["T"]
         )
         c_gas_by_w[w] = 0 if is_hp else pulp.lpSum(
-            V["gas_im"][(w,y,m,d,t)] * data["gas_d"][y] * N_DAYS_OF[(m, d)]
+            V["gas_im"][(w,y,m,d,t)] * data["gas_d"][w][y] * N_DAYS_OF[(m, d)]
             for y in data["Y"] for (m, d) in data["S"] for t in data["T"]
         )
         # OF2 — lifetime operational emissions (kgCO2e), undiscounted. 
@@ -777,7 +784,7 @@ _V_FROM_DATA = (
     "demand_kwh", "pv_per_mod", "heat_kwh", "elec_growth", "heat_growth", "is_hp",
     "heating", "peak_kwth", "land_limit_kwth", "im_base", "elec_band", "gas_base", "gas_band",
     "import_limit_kw", "export_limit_kw", "ef_elec_y", "ef_gas", "scenarios", "W",
-    "weights", "im_base_central", "im_slot_dependent", "im_slot_central",
+    "weights", "im_base_central", "im_slot_dependent", "im_slot_central", "gas_base_central",
 )
 
 
@@ -827,8 +834,9 @@ def _bau_base(demand_kwh: dict, heat_kwh: dict, peak_kwth: float, horizon_years:
     bau_elec_band = select_elec_band(dem_annual / 1000.0)
     bau_base     = bau_elec_band["price"]
     bau_gas_base = select_gas_band(gas_annual / 1000.0)["price"]   # BAU is always a gas boiler
-    # Per-scenario import price: central year-0 reference (active multiplier divided out) × scenario path.
-    base_central = bau_base / TECH_COSTS.get("elec_import_multiplier", 1.0)
+    # Per-scenario import prices: central year-0 reference (active multiplier divided out) × scenario path.
+    base_central     = bau_base / TECH_COSTS.get("elec_import_multiplier", 1.0)
+    gas_base_central = bau_gas_base / TECH_COSTS.get("gas_import_multiplier", 1.0)
     # When the wholesale+DUoS build-up is active, BAU pays the same tariff STRUCTURE 
     # as the optimised case but keyed to its own size band's residual.
     if slot_prices:
@@ -842,8 +850,8 @@ def _bau_base(demand_kwh: dict, heat_kwh: dict, peak_kwth: float, horizon_years:
         capex, repl_basis = equip, equip
     else:
         capex, repl_basis = 0.0, 0.0
-    # Per-year price-independent streams: import kWh, the non-import annual cost, and operational carbon.
-    dem_y, nonimport_y = [], []
+    # Per-year price-independent streams: import kWh, gas kWh, the non-energy annual cost, and operational carbon.
+    dem_y, gas_y, nonenergy_y = [], [], []
     emissions_kg = 0.0   # BAU lifetime operational carbon: all elec from grid + all heat from gas
     for y in range(horizon_years):
         dy        = dem_annual * elec_growth[y]                                            # non-heat elec grows
@@ -851,20 +859,22 @@ def _bau_base(demand_kwh: dict, heat_kwh: dict, peak_kwth: float, horizon_years:
         maint     = peak_kwth * gb["maint_per_kwth_per_yr"] * (1.0 + infl) ** y
         repl      = repl_basis * gb["replace_cost_share"] if y == gb["replace_year"] else 0.0
         dem_y.append(dy)
-        nonimport_y.append(gas_y_kwh * gas_price(y, bau_gas_base) + maint + repl)
+        gas_y.append(gas_y_kwh)
+        nonenergy_y.append(maint + repl)
         emissions_kg += dy * elec_emission_factor(y) + gas_y_kwh * GAS_EMISSION_FACTOR
     return {"capex": capex, "dem_annual": dem_annual, "gas_annual": gas_annual,
             "emissions_kg": emissions_kg, "bau_base": bau_base, "base_central": base_central,
-            "dem_y": dem_y, "nonimport_y": nonimport_y}
+            "gas_base_central": gas_base_central,
+            "dem_y": dem_y, "gas_y": gas_y, "nonenergy_y": nonenergy_y}
 
 
 def _bau_assemble(base: dict, horizon_years: int, scenario) -> dict:
-    # Apply one scenario's import-price path to the invariant BAU base.
-    def im_price_y(y):
-        return base["base_central"] * float(scenario.path[y])
+    # Apply one scenario's electricity and gas price paths to the invariant BAU base.
     annual_undisc, npv = [], base["capex"]
     for y in range(horizon_years):
-        annual = base["dem_y"][y] * im_price_y(y) + base["nonimport_y"][y]
+        annual = (base["dem_y"][y] * scenario.import_price(y, base["base_central"])
+                  + base["gas_y"][y] * scenario.gas_price(y, base["gas_base_central"])
+                  + base["nonenergy_y"][y])
         annual_undisc.append(annual)
         npv += annual * discount_factor(y)
     return {"capex": base["capex"], "npv": npv, "annual_undisc": annual_undisc,
@@ -938,7 +948,7 @@ def _extract_results(prob, V: dict, status, district: str, activity: str, heatin
     # STAGE-2 per-scenario dispatch: year-0 energy totals + per-year undiscounted energy cost
     y0 = {w: dict(imp=0.0, exp=0.0, chg=0.0, disc=0.0, gas=0.0, eh=0.0) for w in W}
     scen_energy_year = {w: [0.0] * H for w in W}
-    im_base_central, gas_base = V["im_base_central"], V["gas_base"]
+    im_base_central, gas_base_central = V["im_base_central"], V["gas_base_central"]
     im_slot_dependent, im_slot_central = V.get("im_slot_dependent"), V.get("im_slot_central")
     for w in W:
         scen = scenarios[w]
@@ -955,7 +965,7 @@ def _extract_results(prob, V: dict, status, district: str, activity: str, heatin
                                                         for t, v in enumerate(im_slots))
                 else:
                     im_cost = imp * im_base_central * float(scen.path[y])
-                gp   = 0.0 if is_hp else gas_price(y, gas_base)
+                gp   = 0.0 if is_hp else scen.gas_price(y, gas_base_central)
                 scen_energy_year[w][y] += (im_cost - exp * export_price(y) + gas * gp) * nd
                 if y == Y0:
                     y0[w]["imp"] += imp * nd; y0[w]["exp"] += exp * nd; y0[w]["gas"] += gas * nd
@@ -1270,7 +1280,7 @@ def knee_design(df_front: pd.DataFrame) -> dict:
 
 
 
-# 7 - Rank all 9 × 4 × 4 combinations (district × activity × heating)
+# 7 - Rank all 9 × 1 × 4 combinations (district × activity × heating)
 def _solve_one_scenario(task: tuple) -> dict:
     district, activity, heating, horizon_years, time_limit_s, objective, threads, scenarios = task
     _ensure_dm_initialized()
@@ -1447,7 +1457,7 @@ def write_results_workbook(dfs: dict, out_path: str, run_meta: dict = None,
         "discount_rate": TECH_COSTS["discount_rate"],
         "solver":        "HiGHS (CBC fallback)",
         # Import-price scenario set (id, weight, level, growth) for the Cover sheet — this round's set
-        "price_scenarios": [(s.id, s.weight, s.level, s.growth) for s in scen],
+        "price_scenarios": [(s.id, s.weight, s.level, s.growth, s.gas_level, s.gas_growth) for s in scen],
         **(run_meta or {}),
     }
     charts_dir = os.path.join(os.path.dirname(out_path), "charts")

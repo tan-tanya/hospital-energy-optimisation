@@ -7,8 +7,8 @@ Outputs (in outputs/Optimisation ({timestamp})/):
    per cost round, each carrying its own sweep rows on the NPV Data sheet   [--skip-stochastic]
 2. charts/{deterministic,stochastic}_*.png; every workbook figure as a standalone image
    (for reports / slides), one prefixed set per cost round   [--skip-stochastic]
-2b. demand/*.png; the complete demand-side chart set — every district × activity class ×
-   heating system × energy type, seasonal / monthly / WD-WE   [demand_report]
+2b. demand/*.png; the complete demand-side chart set — every district × heating system ×
+   energy type, seasonal / monthly / WD-WE   [demand_report]
 3. Policy Recommendations.xlsx                  [--skip-policy]
 4. ashp_grant_aerona3_sensitivity.xlsx          [--skip-ashp-sensitivity]
 5. pv_panel1_sensitivity.xlsx                   [--skip-pv-sensitivity]
@@ -39,7 +39,7 @@ def _cost_round_specs(rounds: tuple = COST_ROUNDS) -> list:
     for name in rounds:
         scen = scenarios_for_round(name)
         print(f"[cost · {name}] {len(scen)} price scenario(s) "
-              f"({'no uncertainty' if name == 'deterministic' else 'import-price uncertainty'}) "
+              f"({'no uncertainty' if name == 'deterministic' else 'elec + gas import-price uncertainty'}) "
               f"across (district, activity, heating) …")
         specs.append({"tag": name, "objective": "cost", "scenarios": scen, "sort_col": "npv_savings_GBP"})
     return specs
@@ -63,7 +63,7 @@ def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(
         description="Two-stage stochastic optimisation of building PV/battery/heat sizing under "
-                    "electricity import-price uncertainty. A full sweep by default: both cost "
+                    "electricity and gas import-price uncertainty. A full sweep by default: both cost "
                     "rounds (deterministic + stochastic) and the emissions objective, over every "
                     "(district, activity, heating) cell.")
     p.add_argument("--time-limit", type=int, default=DEFAULT_TIME_LIMIT_S, dest="time_limit",
@@ -82,11 +82,11 @@ def main(argv=None):
                         "deterministic workbook. Overrides --skip-grid-sensitivity")
     p.add_argument("--skip-policy", action="store_true",
                    help="skip the policy_recommendations.py lever back-calculation after the cost "
-                        "rounds: per activity class (4 of them, each at its own best-NPV district)")
+                        "rounds, at the hospital's best-NPV district")
     p.add_argument("--skip-grid-sensitivity", action="store_true",
                    help="skip the grid_sensitivity.py DNO ceiling / demand-margin bisection after "
                         "the cost rounds (one bisection per district x activity x heat-pump heating, "
-                        "so ~108 extra re-solves on a full sweep)")
+                        "so ~27 extra re-solves on a full sweep)")
     p.add_argument("--skip-ashp-sensitivity", action="store_true",
                    help="skip the Grant Aerona3 ASHP technology sensitivity after the cost rounds "
                         "(one fixed-sizing, dispatch-only re-solve per Optimal ASHP design)")
@@ -111,11 +111,11 @@ def main(argv=None):
     if args.skip_stochastic:
         print("Cost rounds: deterministic only  (1 central scenario; --skip-stochastic).")
     elif args.skip_deterministic:
-        print(f"Cost rounds: stochastic only  ({len(price_scenarios())} weighted import-price "
+        print(f"Cost rounds: stochastic only  ({len(price_scenarios())} weighted elec + gas import-price "
               f"scenarios; --skip-deterministic).")
     else:
         print(f"Cost rounds: deterministic + stochastic  (deterministic = 1 central scenario; "
-              f"stochastic = {len(price_scenarios())} weighted import-price scenarios).")
+              f"stochastic = {len(price_scenarios())} weighted elec + gas import-price scenarios).")
     print(f"Scope: every district × activity × heating cell  |  objective=both (NPV + Carbon + Pareto)  "
           f"time_limit={args.time_limit}s")
     print(f"\n{_osm_survey_info()}")
@@ -125,7 +125,7 @@ def main(argv=None):
     run_dir    = os.path.join("outputs", f"Optimisation ({_timestamp})")
     os.makedirs(run_dir, exist_ok=True)
 
-    print("\nRendering demand profile charts (all districts × activity classes) …")
+    print("\nRendering demand profile charts (all districts) …")
     generate_all_demand_plots(run_dir)
 
     # Full run (both objectives): NPV + Carbon + Pareto workbook.
@@ -148,7 +148,7 @@ def main(argv=None):
     df_npv = cost_rounds[headline]
     if not args.skip_policy:
         import policy_recommendations as polrec
-        print(f"\nBack-calculating policy levers per end-user type (battery + HP capex + HP "
+        print(f"\nBack-calculating policy levers (battery + HP capex + HP "
               f"elec-price + export price + battery capex sweep, {' + '.join(rounds)}) …")
         polrec.run_policy_recommendations(
             cost_rounds,

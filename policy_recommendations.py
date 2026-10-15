@@ -1,8 +1,8 @@
 """
 Import-only, by optimisation_model.py (main()) once the cost rounds complete.
 
-Back-calculates the required capex rebate or electricity price cut ONCE PER ACTIVITY CLASS, 
-for each class's own best-NPV district, so a recommendation can be targeted by end-user type and location. 
+Back-calculates the required capex rebate or electricity price cut for the hospital at its
+best-NPV district, so a recommendation can be targeted by location.
 
 For every such cell it searches until:
   1. Battery storage becomes NPV-recommended.
@@ -10,6 +10,8 @@ For every such cell it searches until:
   3. Heat pumps become the cheapest heating technology via an electricity import price cut:
      Uniform % reduction applied to the import price, using two capex anchors — 0% and 100% HP capex rebate. 
      Gas Boiler is re-solved under the same price cut to ensure fair comparison.
+     Battery is excluded from both solves, as deep cuts would otherwise drop import below the
+     export price and the battery would trade import-to-export instead of serving the building.
   4. Battery storage becomes NPV-recommended on a raised SEG export price alone, as a multiple of today's export price. 
      Independent of levers 1-3. 
 
@@ -20,8 +22,8 @@ Plus one step-wise sweep (fixed steps, no search):
      Set batt_sweep_step=0 to skip.
 
 Outputs, per round: 
-- One tab per lever (rows = activity classes)
-- Summary tab pivoting every lever against activity class
+- One tab per lever
+- Summary tab collecting every lever in one row
 - Charts tab (also written to the charts/ subfolder beside the workbook).
 
 Run_policy_recommendations(cost_rounds, out_path, *, districts=None, activities=None,
@@ -104,6 +106,19 @@ def _elec_price_cut(frac: float):
         yield
     finally:
         oe.import_price_slots_central = orig
+
+
+@contextmanager
+def _no_battery():
+    # Battery capacity pinned to zero. A deep import-price cut takes import below the SEG export
+    # price, so a battery would otherwise import-to-export at a profit and swamp the heating decision.
+    import optimisation_engine as oe
+    orig = oe.BATT_MAX_KWH, oe.BATT_MAX_KW
+    try:
+        oe.BATT_MAX_KWH, oe.BATT_MAX_KW = 0.0, 0.0
+        yield
+    finally:
+        oe.BATT_MAX_KWH, oe.BATT_MAX_KW = orig
 
 
 def _bisect_frac(test, *, lo: float = 0.0, hi: float = 1.0, max_iter: int = 10, tol: float = 0.05):
@@ -265,7 +280,7 @@ def _hp_elec_row(oe, district: str, activity: str, heating: str, hp_capex_frac: 
     cache = {}
 
     def test(frac):
-        with _elec_price_cut(frac):
+        with _elec_price_cut(frac), _no_battery():
             with _hp_rebate(heating, hp_capex_frac):
                 r_hp = oe.solve_scenario(district, activity, heating, scenarios=scenarios,
                                          time_limit_s=time_limit_s, threads=threads)
@@ -292,7 +307,7 @@ def _hp_elec_row(oe, district: str, activity: str, heating: str, hp_capex_frac: 
 
 
 def _winning_cells_per_activity(df_opt: pd.DataFrame, districts, activities) -> list:
-    # One (district, activity) per activity class: each class's own best-NPV district.
+    # One (district, activity) per activity: its best-NPV district.
     # Returns [] if scoping leaves nothing to pick from.
     scoped = df_opt
     if districts:
@@ -387,13 +402,13 @@ def run_policy_recommendations(cost_rounds: dict, out_path: str, *,
     time_limit_s = time_limit_s or oe.DEFAULT_TIME_LIMIT_S
 
     tasks = []
-    activity_order = {}          # {round: [activity, ...]} — best-NPV class first, for output order
+    activity_order = {}          # {round: [activity, ...]} — best-NPV first, for output order
     for round_name, df in cost_rounds.items():
         scen = oe.scenarios_for_round(round_name)
         opt = df[df["status"] == "Optimal"]
         cells = _winning_cells_per_activity(opt, districts, activities)
         activity_order[round_name] = [a for _, a in cells]
-        # Every lever below runs once per activity class, at each class's best-NPV district.
+        # Every lever below runs once, at the best-NPV district.
         for d, a in cells:
             sub = opt[(opt["district"] == d) & (opt["activity"] == a)]
 
@@ -413,7 +428,7 @@ def run_policy_recommendations(cost_rounds: dict, out_path: str, *,
 
             gas = sub[sub["heating"] == "Gas Boiler"]
             hp_candidates = sub[sub["heating"].isin(_HP_HEATINGS)]
-            # Skips only this class's HP levers.
+            # Skips only the HP levers.
             if gas.empty or hp_candidates.empty:
                 continue
             target_cost = gas["total_cost_npv_GBP"].iloc[0]
@@ -441,9 +456,8 @@ def run_policy_recommendations(cost_rounds: dict, out_path: str, *,
                       f"{r['district']} -> {_progress_txt(r)}")
     elif n_total:
         if verbose:
-            print(f"Solving {n_total} policy tasks (bisections + sweep steps) over "
-                  f"{len(set(a for order in activity_order.values() for a in order))} activity "
-                  f"classes, across {n_jobs} processes x {threads_per_worker} solver threads "
+            print(f"Solving {n_total} policy tasks (bisections + sweep steps) across "
+                  f"{n_jobs} processes x {threads_per_worker} solver threads "
                   f"(of {logical} logical cores) …")
         with mpr.Pool(processes=n_jobs) as pool:
             for i, r in enumerate(pool.imap_unordered(_solve_task, tasks), 1):
@@ -487,7 +501,7 @@ def _add_grant_value_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _order_rows(df: pd.DataFrame, kind: str, activity_order: list) -> pd.DataFrame:
-    # Every tab reads activity class (best-NPV class first), then the lever's own step column within each class.
+    # Every tab is ordered by activity, then by the lever's own step column.
     if df.empty or "activity" not in df.columns:
         return df
     within = {"batt_sweep": "rebate_pct", "hp_elec": "hp_capex_rebate_pct"}.get(kind)
@@ -499,8 +513,8 @@ def _order_rows(df: pd.DataFrame, kind: str, activity_order: list) -> pd.DataFra
 
 
 def _pick(df: pd.DataFrame, activity: str, col: str, where: dict = None):
-    # One cell out of a lever frame for one activity class; NaN when that lever produced no row
-    # (e.g. a class whose cell has no Gas Boiler counterpart never gets the HP levers).
+    # One cell out of a lever frame for one activity; NaN when that lever produced no row
+    # (e.g. a cell with no Gas Boiler counterpart never gets the HP levers).
     if df is None or df.empty or "activity" not in df.columns or col not in df.columns:
         return np.nan
     sub = df[df["activity"] == activity]
@@ -511,7 +525,7 @@ def _pick(df: pd.DataFrame, activity: str, col: str, where: dict = None):
 
 
 def _build_summary(frames: dict, round_name: str, activity_order: list) -> pd.DataFrame:
-    # One row per activity class, pulled from the lever frames already in memory.
+    # One row per activity, pulled from the lever frames already in memory.
     batt  = frames["battery"].get(round_name, pd.DataFrame())
     sweep = frames["batt_sweep"].get(round_name, pd.DataFrame())
     hp    = frames["hp"].get(round_name, pd.DataFrame())
@@ -568,7 +582,7 @@ _SHEET_STEMS = {"summary": "Summary", "battery": "Battery", "batt_sweep": "Batte
 
 
 def _act_style():
-    # Short activity labels + per-class colours.
+    # Short activity labels + colours.
     import optimisation_report as orp
     return orp.ACT_SHORT, orp.ACT_COLORS
 
@@ -589,7 +603,7 @@ def _build_charts(frames: dict, round_name: str, charts_dir: str) -> list:
     colors = [act_colors.get(act_short.get(a, a), "#4c72b0") for a in summary["activity"]]
     paths = []
 
-    # (1) Thresholds by activity class. 
+    # (1) Thresholds per lever.
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5),
                                    gridspec_kw={"width_ratios": [2.1, 1]})
     pct_levers = [("battery_rebate_pct", "Battery capex rebate", "#4c72b0"),
@@ -612,7 +626,7 @@ def _build_charts(frames: dict, round_name: str, charts_dir: str) -> list:
     ax1.set_xticks(x, labels, fontsize=9)
     ax1.set_ylabel("Required support (% of capex / price)")
     ax1.set_ylim(0, 105)
-    ax1.set_title("Support needed to flip each lever, by end-user type", fontweight="bold", fontsize=10)
+    ax1.set_title("Support needed to flip each lever", fontweight="bold", fontsize=10)
     ax1.legend(fontsize=8)
 
     mult = pd.to_numeric(summary.get("export_price_multiple", pd.Series(dtype=float)),
@@ -623,24 +637,24 @@ def _build_charts(frames: dict, round_name: str, charts_dir: str) -> list:
             hatch=["" if o else "//" for o in ok],
             edgecolor="black", linewidth=0.6)
     for xi, v, o in zip(x, mult, ok):
-        ax2.text(xi, v, f"{v:.1f}x" if o else f">{v:.0f}x\nno battery", ha="center", va="bottom",
+        ax2.text(xi, v, f"{v:.1f}x" if o else f">{v:.1f}x\nno battery", ha="center", va="bottom",
                  fontsize=7.5)
     ax2.set_xticks(x, labels, fontsize=9)
     ax2.set_ylabel("Export price (x today's SEG rate)")
     ax2.set_title("Export price needed for a battery\n(hatched = never reached)",
                   fontweight="bold", fontsize=10)
-    fig.suptitle(f"Policy support by end-user type — {round_name} round "
-                 f"(each class at its own best-NPV district)", fontweight="bold", fontsize=12)
+    fig.suptitle(f"Policy support — {round_name} round "
+                 f"(at the best-NPV district)", fontweight="bold", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     p1 = os.path.join(charts_dir, f"policy_thresholds_{round_name}.png")
     fig.savefig(p1, dpi=150, bbox_inches="tight")
     plt.close(fig)
     paths.append(p1)
 
-    # (2) The swept battery grant: what each further increment buys, per class.
+    # (2) The swept battery grant: what each further increment buys.
     if not sweep.empty:
         fig, (axa, axb) = plt.subplots(1, 2, figsize=(13, 5.5))
-        full_lbls = []      # full-rebate values, stacked in one corner: all four land near zero
+        full_lbls = []      # full-rebate values, stacked in one corner: they land near zero
         for a in summary["activity"]:
             s = sweep[sweep["activity"] == a].sort_values("rebate_pct")
             if s.empty:
@@ -676,7 +690,7 @@ def _build_charts(frames: dict, round_name: str, charts_dir: str) -> list:
         axb.set_ylim(0, 118)
         axb.set_title("What the grant returns as NPV gain", fontweight="bold", fontsize=10)
         axb.grid(alpha=0.3)
-        fig.suptitle(f"Battery capex grant sweep by end-user type — {round_name} round",
+        fig.suptitle(f"Battery capex grant sweep — {round_name} round",
                      fontweight="bold", fontsize=12)
         fig.tight_layout(rect=(0, 0, 1, 0.94))
         p2 = os.path.join(charts_dir, f"battery_capex_sweep_{round_name}.png")

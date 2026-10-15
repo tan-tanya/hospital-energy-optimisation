@@ -6,7 +6,7 @@ non-EV electricity IS the CIBSE benchmark used to build the profile, so comparin
 a benchmark survey tests one benchmark against another. DECs are metered annual consumption
 from real buildings, so they sit outside the whole build-up.
 
-Three-way comparison per activity class:
+Three-way comparison for the hospital:
     model  - this study, year 0, across all nine districts
     TM46   - the DEC 'typical_*' fields, i.e. the benchmark the DEC scheme scores against
     DEC    - the DEC 'annual_*' fields, i.e. metered actuals
@@ -18,8 +18,7 @@ Conventions matched to Section 3.2.9.1:
     and excluding its assumed EV charging layer.
 
 Population caveats, which the output restates:
-  - DECs are issued to public authority buildings only, so the office and retail samples are
-    public-sector stock and are not representative of private commercial premises.
+  - DECs are issued to public authority buildings only, so the sample is public-sector stock.
   - DEC applies at or above 250 m2, so smaller premises are absent by design.
 
 Source: Energy Performance of Buildings Register, England and Wales, DEC bulk CSV
@@ -27,7 +26,7 @@ Source: Energy Performance of Buildings Register, England and Wales, DEC bulk CS
 
 Usage:
     python scripts/dec_validation.py                      # 2025 lodgements
-    python scripts/dec_validation.py --years 2018-2026    # pooled, needed for retail
+    python scripts/dec_validation.py --years 2018-2026    # pooled across years
 """
 import argparse
 import os
@@ -47,14 +46,9 @@ DEC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
                        ".admin", "display-csv")
 
 # Activity class -> TM46 main_benchmark as lodged on the register (lower-cased), plus whether
-# to restrict the sample to air-conditioned stock. The modelled office is an A/C archetype,
-# while TM46 'General Office' spans naturally ventilated, mixed-mode and A/C premises alike,
-# so the unrestricted sample is not the right comparator for it.
+# to restrict the sample to air-conditioned stock (None = no restriction).
 CLASSES = {
-    "Health: Health centre":    dict(benchmark="clinic",                           aircon=None),
-    "Health: Hospital":         dict(benchmark="hospital - clinical and research", aircon=None),
-    "Office: A/C standard":     dict(benchmark="general office",                   aircon="Y"),
-    "Retail: Department store": dict(benchmark="large non-food shop",              aircon=None),
+    "Health: Hospital": dict(benchmark="hospital - clinical and research", aircon=None),
 }
 
 DEC_COLS = ["main_benchmark", "total_floor_area", "main_heating_fuel", "aircon_present",
@@ -69,7 +63,7 @@ THERM_BOUNDS = (1.0, 1500.0)
 
 # ---------------------------------------------------------------- model side
 def model_intensities() -> pd.DataFrame:
-    """Year-0 kWh/m2/yr per activity class across all nine districts."""
+    """Year-0 kWh/m2/yr across all nine districts."""
     oe._ensure_dm_initialized()
     rows = []
     for activity in CLASSES:
@@ -152,8 +146,7 @@ def main() -> None:
     print(f"Records in scope: {len(dec):,} "
           f"(floor area >= {MIN_FLOOR_AREA_M2} m2, deduplicated by UPRN)")
     print(f"Boiler efficiency for the fuel conversion: {dm.ETA_BOILER}")
-    print("DEC covers public authority buildings only; the office and retail samples are "
-          "public-sector stock.\n")
+    print("DEC covers public authority buildings only; the sample is public-sector stock.\n")
 
     for activity, spec in CLASSES.items():
         b = dec_sample(dec, spec)

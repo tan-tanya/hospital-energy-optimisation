@@ -23,18 +23,8 @@ from demand_profile_model import (
 
 
 # 1 - CONSTANTS
-ACT_PLOT_COLORS = {
-    "Health: Health centre":    "#C0392B",
-    "Health: Hospital":         "#E67E22",
-    "Office: A/C standard":     "#2C3E50",
-    "Retail: Department store": "#8E44AD",
-}
-ACT_PLOT_STYLES = {
-    "Health: Health centre":    "-",
-    "Health: Hospital":         "-.",
-    "Office: A/C standard":     "--",
-    "Retail: Department store": ":",
-}
+ACT_PLOT_COLORS = {"Health: Hospital": "#E67E22"}
+ACT_PLOT_STYLES = {"Health: Hospital": "-"}
 PLOT_COMBINATIONS = [   # (heating, energy_type) combinations that produce non-zero plots
     ("Gas Boiler",        "Electricity"),
     ("Gas Boiler",        "Gas"),

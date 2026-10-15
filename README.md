@@ -1,6 +1,6 @@
 # energy-optimisation
 
-Optimal sizing and dispatch of on-site electricity and heating systems for UK non-domestic buildings, across nine UK districts and four building activity classes.
+Optimal sizing and dispatch of on-site electricity and heating systems for UK hospitals, across nine UK districts.
 
 The model builds half-hourly building demand profiles from published benchmarks, then solves a linear program (LP) that sizes rooftop PV, battery storage, thermal storage and a heating system over a 15-year horizon, ranking each configuration against a gas-boiler business-as-usual baseline on both net present value and cumulative carbon.
 
@@ -8,27 +8,27 @@ The model builds half-hourly building demand profiles from published benchmarks,
 
 ## Methodology
 
-**1. Demand modelling.** Half-hourly electricity and heat profiles per (district, activity), assembled from CIBSE annual benchmarks, NCM occupancy schedules, TM46 baseload/HDD splits, Met Office degree-days and sunshine hours, and ERA5 hourly temperatures.
+**1. Demand modelling.** Half-hourly hospital electricity and heat profiles per district, assembled from CIBSE annual benchmarks, NCM occupancy schedules, TM46 baseload/HDD splits, BEES floor areas and always-on base-load fractions, a UKPN EV-charging layer, Met Office degree-days and sunshine hours, and ERA5 hourly temperatures. Over the horizon, non-heat electricity grows per the DESNZ Reference projection and heat demand falls with UKCP18 warming.
 
-**2. Optimisation.** For each (district, activity, heating) cell, the LP sizes PV, battery, thermal store and heating capacity to minimise discounted total cost, subject to energy balance, roof area, grid import/export limits and land availability.
+**2. Optimisation.** For each (district, heating) cell, the LP sizes PV, battery, thermal store and heating capacity to minimise discounted total cost, subject to energy balance, roof area, grid import/export limits and land availability.
 
-**3. Uncertainty.** A two-stage stochastic program (TSSP) over reduced electricity import-price scenarios, run alongside a deterministic central-price round for comparison.
+**3. Uncertainty.** A two-stage stochastic program (TSSP) over reduced import-price scenarios for electricity and gas, run alongside a deterministic central-price round for comparison. Each fuel's price level and annual escalation are drawn by Latin hypercube sampling (1,000 draws) from triangular Low/Central/High bands, then reduced by k-means clustering to 3 weighted scenarios, keeping the draw nearest each centroid. The two fuels are paired: each scenario sits at the same percentile of both fuels' price bands.
 
-**4. Downstream analysis.** Carbon objective and epsilon-constraint Pareto fronts, grid-headroom sensitivity, back-calculated capital-cost rebates needed to make heat pumps viable per region, and two technology sensitivities (a cheaper low-efficiency PV panel, a lower-COP air-source heat pump).
+**4. Downstream analysis.** Carbon objective and epsilon-constraint Pareto fronts, grid-headroom sensitivity, back-calculated policy levers at the best-NPV district (battery and heat-pump capital rebates, a heat-pump electricity price cut, a raised export price, and a battery-grant sweep), and two technology sensitivities (a cheaper low-efficiency PV panel, a lower-COP air-source heat pump).
 
-Scope: 9 districts × 4 activities × 4 heating systems.
+Scope: 9 districts × 4 heating systems, for a single activity class (Health: Hospital).
 
-| Districts | Activities | Heating systems |
-|---|---|---|
-| East Anglia | Health: Health centre | Gas Boiler |
-| England E and NE | Health: Hospital | ASHP |
-| England NW and N Wales | Office: A/C standard | GSHP (vertical) |
-| England SE and Central S | Retail: Department store | GSHP (horizontal) |
-| England SW and S Wales | | |
-| Midlands | | |
-| Scotland E | | |
-| Scotland N | | |
-| Scotland W | | |
+| Districts | Heating systems |
+|---|---|
+| East Anglia | Gas Boiler |
+| England E and NE | ASHP |
+| England NW and N Wales | GSHP (vertical) |
+| England SE and Central S | GSHP (horizontal) |
+| England SW and S Wales | |
+| Midlands | |
+| Scotland E | |
+| Scotland N | |
+| Scotland W | |
 
 ---
 
@@ -40,6 +40,8 @@ Requires Python ≥ 3.12. Dependencies are managed with [uv](https://docs.astral
 uv sync --extra optim
 ```
 
+The `optim` extra adds the solver stack (PuLP + HiGHS). A plain `uv sync` is enough for the demand-profile model alone.
+
 ---
 
 ## Running
@@ -50,9 +52,9 @@ uv sync --extra optim
 python optimisation_model.py
 ```
 
-Writes everything to a timestamped `outputs/Optimisation (YYYYMMDD, HHMM)/` directory: the results workbook, standalone chart PNGs, policy recommendations, and both sensitivity workbooks.
+Writes everything to a timestamped `outputs/Optimisation (YYYYMMDD, HHMM)/` directory: one results workbook per cost round (deterministic and stochastic), standalone chart PNGs, the demand chart set, policy recommendations, and both sensitivity workbooks.
 
-**The entire run takes around 31 hours.** By skipping the stochastic round, the run can be brought down to 9-10 hours:
+**The entire run takes around 26 hours** (the last full run took 26 h 18 m). Skipping the stochastic round shortens it considerably:
 
 ```bash
 python optimisation_model.py --skip-stochastic
@@ -82,7 +84,7 @@ memory.
 python demand_profile_model.py
 ```
 
-Writes the full demand chart set (every district × activity class) — to `outputs/Demand ({timestamp})/demand/`. 
+Writes the full demand chart set (every district) — to `outputs/Demand ({timestamp})/demand/`. 
 Also importable; this is how the optimiser consumes demand.
 
 ---
@@ -96,7 +98,7 @@ Also importable; this is how the optimiser consumes demand.
 | `optimisation_config.py` | Solver and horizon constants |
 | `optimisation_report.py` | Results workbook assembly |
 | `optimisation_plots.py` | Chart generation |
-| `demand_profile_model.py` | Half-hourly demand profiles per district and activity |
+| `demand_profile_model.py` | Half-hourly hospital demand profiles per district |
 | `demand_report.py` | Demand chart rendering |
 | `model_params.py` | Technology costs and parameters, read from `data/model_parameters.xlsx` |
 | `districts.py` | District table (ICAO stations, UKCP regions, coordinates) |
@@ -110,12 +112,21 @@ Also importable; this is how the optimiser consumes demand.
 | `policy_recommendations.py` | Back-calculated regional capital rebates |
 | `pv_panel1_sensitivity.py` | Alternative PV panel sensitivity |
 | `ashp_grant_aerona3_sensitivity.py` | Alternative ASHP sensitivity |
-| `api_osm_storeys.py` | OpenStreetMap building storey survey |
+| `api_osm_storeys.py` | OpenStreetMap hospital storey survey |
 | `api_temperature_profiles.py` | ERA5 hourly temperature via Open-Meteo |
-| `api_wholesale_prices.py` | Wholesale electricity price series |
+| `api_wholesale_prices.py` | Half-hourly GB wholesale electricity prices (Elexon MID) |
 
 Modules prefixed `api_` pull live external data and write their output into `data/`. 
 They are imported at runtime by other modules but only need re-running when refreshing the underlying data.
+
+### Standalone scripts
+
+| Script | Role |
+|---|---|
+| `scripts/dec_validation.py` | Compares modelled year-0 hospital energy intensities against metered Display Energy Certificates (DEC) and their TM46 benchmarks. Needs the DEC bulk CSV from the Energy Performance of Buildings Register |
+| `scripts/headroom_medians.py` | Recomputes the per-district grid import/export ceilings in `data/model_parameters.xlsx` from the raw DNO extracts in `data/headroom/` (median of non-zero headroom) |
+
+Neither is imported by the model.
 
 ---
 
@@ -130,7 +141,9 @@ They are imported at runtime by other modules but only need re-running when refr
 | `data/duoscharges/` | 2025 DUoS Schedules of Charges | All UK DNOs |
 | `data/inputs.xlsx` | CIBSE, NCM, TM46, BEES benchmarks | Various |
 | `data/model_parameters.xlsx` | Technology costs and model parameters | Various |
+| `data/api_*.xlsx` | Outputs of the `api_` modules (OSM storeys, ERA5 temperatures, wholesale prices) | OpenStreetMap, Open-Meteo, Elexon |
+| `data/*_projection_output.csv` | Processed electricity-demand and climate (HDD) projections, written by `projections.py` | DESNZ, UKCP18 |
 | `data/00 readme.xlsx` | Directory tab indexing every source | — |
 | `cache/` | OpenStreetMap survey checkpoints | OpenStreetMap |
 
-`cache/` pins the building-stock survey to the data the model was run against.
+`cache/` pins the hospital building-stock survey to the data the model was run against.
