@@ -1,4 +1,4 @@
-# energy-optimisation
+# hospital-energy-optimisation
 
 Optimal sizing and dispatch of on-site electricity and heating systems for UK hospitals, across nine UK districts.
 
